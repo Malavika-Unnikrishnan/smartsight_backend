@@ -1,0 +1,87 @@
+import gradio as gr
+import requests
+import json
+import os
+from PIL import Image
+from io import BytesIO
+from transformers import BlipProcessor, BlipForConditionalGeneration
+import torch
+import google.generativeai as genai
+
+# Configure Gemini API
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+# Load BLIP Model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
+model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large").to(device)
+
+# Instagram API Details
+API_URL = "https://instagram230.p.rapidapi.com/user/posts"
+HEADERS = {
+    "x-rapidapi-key": os.getenv("RAPIDAPI_KEY"),  # Secure API Key
+    "x-rapidapi-host": "instagram230.p.rapidapi.com"
+}
+
+def fetch_instagram_post(username, name_or_relation):
+    """Fetch the latest Instagram post & return only Gemini's meaningful update."""
+    querystring = {"username": username}
+    response = requests.get(API_URL, headers=HEADERS, params=querystring)
+    
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        return "Error: Invalid response from API"
+    
+    if "items" in data and isinstance(data["items"], list) and len(data["items"]) > 0:
+        latest_post = data["items"][0]
+        caption = latest_post.get("caption", {}).get("text", "No caption available")
+        media_url = latest_post.get("image_versions2", {}).get("candidates", [{}])[0].get("url")
+        
+        if not media_url:
+            media_url = latest_post.get("video_versions", [{}])[0].get("url")
+        
+        if media_url:
+            media_response = requests.get(media_url)
+            if media_response.status_code == 200:
+                image = Image.open(BytesIO(media_response.content))
+                blip_description = generate_image_description(image)
+                return generate_meaningful_sentence(name_or_relation, caption, blip_description)
+    
+    return "No posts found."
+
+def generate_image_description(image):
+    """Use BLIP to generate an image description."""
+    inputs = processor(image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        output = model.generate(**inputs)
+    return processor.decode(output[0], skip_special_tokens=True)
+
+def generate_meaningful_sentence(name, caption, blip_description):
+    """Generate a meaningful sentence using Gemini AI."""
+    prompt = (
+        f"'{name}' posted a picture on Instagram. "
+        f"They are related to the user or may be a loved one. "
+        f"The Instagram post caption is: {caption}. "
+        f"The AI-generated visual description is: {blip_description}. "
+        f"Now, summarize this into a meaningful update in 2-3 sentences for a blind user."
+    )
+
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
+    
+    return response.text.strip() if response.text else "No meaningful description generated."
+
+# Gradio UI
+demo = gr.Interface(
+    fn=fetch_instagram_post,
+    inputs=[
+        gr.Textbox(label="Enter Instagram Username"),
+        gr.Textbox(label="Enter Name or Relation (e.g., John, My Daughter)")
+    ],
+    outputs=gr.Textbox(label="Gemini's Meaningful Update"),
+    title="Instagram Post Analyzer for Blind Users",
+    description="Enter an Instagram username and a name/relation to fetch the latest post, analyze it with AI, and get a meaningful summary."
+)
+
+demo.launch()
