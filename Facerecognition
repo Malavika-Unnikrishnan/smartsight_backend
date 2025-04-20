@@ -1,0 +1,83 @@
+import gradio as gr
+import cv2
+import os
+import uuid
+from deepface import DeepFace
+import numpy as np
+
+# Setup
+if not os.path.exists("face_data"):
+    os.makedirs("face_data")
+
+haar_model_path = "haarcascade_frontalface_default.xml"
+face_cascade = cv2.CascadeClassifier(haar_model_path)
+
+# Use more accurate model
+MODEL_NAME = "Facenet"
+
+# Resize function
+def resize_face(face):
+    return cv2.resize(face, (160, 160))
+
+# Add face to database
+def add_face(name, img):
+    img_array = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    faces = face_cascade.detectMultiScale(img_array, 1.3, 5)
+
+    if len(faces) == 0:
+        return "No face detected."
+
+    for (x, y, w, h) in faces:
+        face_crop = img_array[y:y+h, x:x+w]
+        face_crop = resize_face(face_crop)
+        filename = f"{name}_{uuid.uuid4().hex[:6]}.jpg"
+        cv2.imwrite(os.path.join("face_data", filename), face_crop)
+        return f"Face added for '{name}'!"
+
+# Recognize uploaded face
+def recognize_face(img):
+    img_array = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    faces = face_cascade.detectMultiScale(img_array, 1.3, 5)
+
+    if len(faces) == 0:
+        return "No face detected."
+
+    x, y, w, h = faces[0]
+    input_face = img_array[y:y+h, x:x+w]
+    input_face = resize_face(input_face)
+    temp_path = "temp.jpg"
+    cv2.imwrite(temp_path, input_face)
+
+    for file in os.listdir("face_data"):
+        try:
+            result = DeepFace.verify(
+                temp_path,
+                os.path.join("face_data", file),
+                model_name=MODEL_NAME,
+                enforce_detection=False
+            )
+            if result["verified"]:
+                return f"Match: {file.split('_')[0]}"
+        except Exception as e:
+            continue
+
+    return "🤷‍♂️ No match found. Person is unknown."
+
+# Gradio UI
+with gr.Blocks() as demo:
+    gr.Markdown("## Face Recognition App using Haarcascade + Deepface (Facenet)")
+
+    with gr.Tab("➕ Add Face"):
+        name = gr.Text(label="Enter Name")
+        img_input = gr.Image(type="pil", label="Upload Face Image")
+        add_btn = gr.Button("Add Face")
+        add_output = gr.Text()
+        add_btn.click(fn=add_face, inputs=[name, img_input], outputs=add_output)
+
+    with gr.Tab("🔍 Recognize Face"):
+        recog_input = gr.Image(type="pil", label="Upload Image to Recognize")
+        recog_btn = gr.Button("Recognize")
+        recog_output = gr.Text()
+        recog_btn.click(fn=recognize_face, inputs=recog_input, outputs=recog_output)
+
+demo.launch()
